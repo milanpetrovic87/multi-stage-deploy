@@ -1,0 +1,163 @@
+# Deploy to Azure Kubernetes Service
+# Build and push image to Azure Container Registry; Deploy to Azure Kubernetes Service
+# https://docs.microsoft.com/azure/devops/pipelines/languages/docker
+
+trigger:
+- master 
+
+resources:
+- repo: self
+
+variables:
+
+  # Container registry service connection established during pipeline creation
+  dockerRegistryServiceConnection: '2d53a9bb-3454-47c0-81c3-00e1ea546a19'
+  imageRepository: 'flaskprod'
+  containerRegistry: 'acrforimages37343.azurecr.io'
+  dockerfilePath: '**/Dockerfile'
+  tag: '$(Build.BuildId)'
+  imagePullSecret: 'acrforimages3734394004f9e-auth'
+  kubernetesServiceConnectiondev: 'AKS-cluster-default'
+  kubernetesServiceConnectionprod: 'prod-prod-aks-vega-default-1696324967067'
+
+  # Agent VM image name
+  vmImageName: 'ubuntu-latest'
+
+
+stages:
+- stage: Build
+  displayName: Build stage
+  jobs:
+  - job: Build
+    displayName: Build
+    #condition: eq(eq(variables['Build.SourceBranch'], 'refs/heads/dev'),'True') # ovo sam dodao
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+
+    - upload: manifests
+      artifact: manifests
+
+- stage: Deploy
+  displayName: Deploy stage
+  #condition: eq(eq(variables['Build.SourceBranch'], 'refs/heads/dev'),'True') # ovo sam dodao
+  dependsOn: Build
+
+  jobs:
+  - deployment: Deploy
+    displayName: Deploy
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+              kubernetesServiceConnection: $(kubernetesServiceConnectiondev)
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/manifests/deployment.yml
+                $(Pipeline.Workspace)/manifests/service.yml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)
+              kubernetesServiceConnection: $(kubernetesServiceConnectiondev)
+              
+            
+- stage: TestingTheLoad
+  displayName: Testing load
+  dependsOn: Deploy
+  jobs:
+  - deployment: Testing
+    displayName: Testing
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'dev'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: k6-load-test@0
+            inputs:
+              filename: $(Pipeline.Workspace)/manifests/test.js
+
+
+
+- stage: BuildProd
+  displayName: Build stage for Prod
+  jobs:
+  - job: BuildProd
+    displayName: BuildProd
+    #condition: eq(eq(variables['Build.SourceBranch'], 'refs/heads/master'),'True') # ovo sam dodao
+    pool:
+      vmImage: $(vmImageName)
+    steps:
+    - task: Docker@2
+      displayName: Build and push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageRepository)
+        dockerfile: $(dockerfilePath)
+        containerRegistry: $(dockerRegistryServiceConnection)
+        tags: |
+          $(tag)
+
+    - upload: manifests
+      artifact: manifests
+
+- stage: DeployProd
+  displayName: Deploy stage Prod
+  dependsOn: BuildProd
+
+  jobs:
+  - deployment: DeployProd
+    displayName: DeployProd
+    #condition: eq(eq(variables['Build.SourceBranch'], 'refs/heads/master'),'True') # ovo sam dodao
+    pool:
+      vmImage: $(vmImageName)
+    environment: 'prod'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - task: KubernetesManifest@0
+            displayName: Create imagePullSecret
+            inputs:
+              action: createSecret
+              secretName: $(imagePullSecret)
+              dockerRegistryEndpoint: $(dockerRegistryServiceConnection)
+              kubernetesServiceConnection: $(kubernetesServiceConnectionprod)
+
+          - task: KubernetesManifest@0
+            displayName: Deploy to Kubernetes cluster
+            inputs:
+              action: deploy
+              manifests: |
+                $(Pipeline.Workspace)/manifests/deployment.yml
+                $(Pipeline.Workspace)/manifests/service.yml
+              imagePullSecrets: |
+                $(imagePullSecret)
+              containers: |
+                $(containerRegistry)/$(imageRepository):$(tag)
+              kubernetesServiceConnection: $(kubernetesServiceConnectiondev)
+

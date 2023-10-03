@@ -1,0 +1,19 @@
+apiVersion : apps/v1
+kind: Deployment
+metadata:
+  name: flaskprod 
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: flaskprod
+  template:
+    metadata:
+      labels:
+        app: flaskprod 
+    spec:
+      containers:
+        - name: flaskprod 
+          image: acrforimages37343.azurecr.io/flaskprod
+          ports:
+          - containerPort: 5000
